@@ -159,8 +159,8 @@ from benchmarks.tasks.tts import (
     build_base_url,
     make_tts_send_fn,
     run_seedtts_similarity,
-    run_seedtts_transcribe,
     run_seedtts_utmos,
+    run_seedtts_transcribe,
     save_generated_audio_metadata,
     save_speed_results,
 )
@@ -210,6 +210,7 @@ class TtsSeedttsBenchmarkConfig:
     lang: str = "en"
     device: str = "cuda:0"
     similarity_checkpoint: str | None = None
+    with_utmos: bool = False
 
 
 def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
@@ -366,6 +367,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         lang=args.lang,
         device=args.device,
         similarity_checkpoint=args.similarity_checkpoint,
+        with_utmos=args.with_utmos,
     )
 
 
@@ -509,6 +511,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1200,
         help="Timeout in seconds to wait for server readiness.",
     )
+    parser.add_argument(
+        "--with-utmos",
+        action="store_true",
+        help="Also score UTMOS MOS after WER.",
+    )
+
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--generate-only",
@@ -560,6 +568,9 @@ def main() -> None:
         return
 
     run_tts_seedtts_transcribe(config)
+
+    if args.with_utmos:
+        run_seedtts_utmos(config, log_per_sample=False)
 
 
 if __name__ == "__main__":
