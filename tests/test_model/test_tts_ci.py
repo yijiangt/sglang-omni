@@ -114,7 +114,7 @@ VC_STREAM_WER_MAX_PER_SAMPLE = 0.16666666666666666
 # worst-of-5 support. See the "Speaker similarity calibration" section of
 # the PR description for the full per-run table.
 VC_SIMILARITY_MEAN_MIN = 60.0
-VC_UTMOS_MEAN_MIN = 0.0
+VC_UTMOS_MEAN_MIN = 4.1535
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
 # others may not pass the CI.
