@@ -53,6 +53,7 @@ from tests.test_model.omni_router_utils import (
 )
 from tests.utils import (
     MetricCheckCollector,
+    apply_mos_slack,
     apply_slack,
     apply_wer_slack,
     assert_speed_thresholds,
@@ -114,7 +115,10 @@ VC_STREAM_WER_MAX_PER_SAMPLE = 0.16666666666666666
 # worst-of-5 support. See the "Speaker similarity calibration" section of
 # the PR description for the full per-run table.
 VC_SIMILARITY_MEAN_MIN = 60.0
-VC_UTMOS_MEAN_MIN = 4.1535
+# Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
+# worst-of-5 = 4.1538 · mean = 4.1618 · stdev = 0.0079
+VC_UTMOS_MEAN_REFERENCE = 4.1538
+VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 # Note (Chenyang): Only thresholds for the CI concurrency are dedicatedly tuned,
 # others may not pass the CI.
