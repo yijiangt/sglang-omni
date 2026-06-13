@@ -1,0 +1,3 @@
+config_cls: Zonos2TtsPipelineConfig
+model_path: zyphra/zonos2-8b
+relay_backend: shm

@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, and MOSS-TTS.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, MOSS-TTS, and ZONOS2 TTS.
 
 ## Prerequisites
 
@@ -28,6 +28,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table; missing `voice` defaults to `Vivian` |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`; no reference audio is required |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`); duration via `${token:N}` or `token_count`; benchmark at `--max-concurrency 8` |
+| [ZONOS2 TTS](../cookbook/zonos2_tts.md) | `examples/configs/zonos2_tts.yaml` | Sparse MoE 8B model at 44kHz; voice cloning via `references[0].audio_path`; sampling controlled via `temperature`, `top_k`, `min_p` |
 
 ## Launch the Server
 
@@ -80,6 +81,15 @@ For MOSS-TTS:
 sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
   --config examples/configs/moss_tts.yaml \
+  --port 8000
+```
+
+For ZONOS2 TTS:
+
+```bash
+sgl-omni serve \
+  --model-path zyphra/zonos2-8b \
+  --config examples/configs/zonos2_tts.yaml \
   --port 8000
 ```
 
