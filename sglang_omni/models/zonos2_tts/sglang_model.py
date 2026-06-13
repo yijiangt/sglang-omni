@@ -177,7 +177,7 @@ class Zonos2Attention(nn.Module):
         k = F.rms_norm(k, (self.head_dim,), eps=1e-6)
 
         # RoPE (interleaved / non-neox format)
-        q, k = self.rotary_emb(positions, q.flatten(-2), k.flatten(-2), is_neox=False)
+        q, k = self.rotary_emb(positions, q.flatten(-2), k.flatten(-2))
         q = q.view(T, self.num_heads, self.head_dim)
 
         # Paged attention
@@ -669,11 +669,15 @@ class Zonos2SGLangModel(nn.Module):
             )
 
         try:
+            from zonos2.distributed.info import set_tp_info, try_get_tp_info
             from zonos2.models.weight import load_checkpoint_weight
         except ImportError as exc:
             raise ImportError(
                 "zonos2 package not found. Install via: pip install -e /path/to/ZONOS2/python"
             ) from exc
+
+        if try_get_tp_info() is None:
+            set_tp_info(rank=0, size=1)
 
         logger.info("Loading ZONOS2 weights from %s", model_path)
         state_dict = load_checkpoint_weight(model_path, device=torch.device("cpu"))

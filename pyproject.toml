@@ -74,6 +74,15 @@ dependencies = [
     "x-transformers",          # Ming talker rotary embeddings
 ]
 
+[project.optional-dependencies]
+# ZONOS2 TTS: pins torchaudio==2.9.1 which conflicts with sglang-omni's 2.11.0.
+# Install separately with --no-deps so the conflict is skipped; sglang-omni's
+# torchaudio/transformers versions are compatible with the subset of zonos2 code used.
+#   pip install --no-deps "git+https://github.com/Zyphra/ZONOS2.git@6ceb6ed"
+zonos2 = [
+    "zonos2 @ git+https://github.com/Zyphra/ZONOS2.git@6ceb6ed",
+]
+
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router = "sglang_omni_router.serve:main"
@@ -81,6 +90,10 @@ sgl-omni-router = "sglang_omni_router.serve:main"
 [tool.uv]
 override-dependencies = [
     "protobuf>=6.31.1,<7.0.0",
+    # ZONOS2 pins older versions; sglang-omni's versions are compatible with the
+    # subset of zonos2 code we use (tts prompt/config/vocoder utilities).
+    "torchaudio==2.11.0",
+    "transformers==5.6.0",
 ]
 
 [tool.pytest.ini_options]

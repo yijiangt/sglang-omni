@@ -10,6 +10,7 @@ from sglang_omni.utils import (
     architecture_from_hf_config,
     try_resolve_arch_from_mistral_config,
     try_resolve_arch_from_raw_config,
+    try_resolve_arch_from_zonos2_config,
 )
 
 
@@ -26,6 +27,8 @@ def resolve_config_cls_for_model_path(model_path: str):
         arch = try_resolve_arch_from_raw_config(model_path)
     if arch is None:
         arch = try_resolve_arch_from_mistral_config(model_path)
+    if arch is None:
+        arch = try_resolve_arch_from_zonos2_config(model_path)
     if arch is None:
         raise ValueError(f"Could not resolve model architecture for {model_path!r}")
     return PIPELINE_CONFIG_REGISTRY.get_config(arch)

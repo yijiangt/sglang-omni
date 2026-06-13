@@ -80,6 +80,31 @@ def try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
     return _CONFIG_MODEL_TYPE_TO_ARCH.get(model_type)
 
 
+def try_resolve_arch_from_zonos2_config(model_path: str) -> str | None:
+    """Detect ZONOS2 checkpoints using zonos2's resolve_model_path + file presence.
+
+    ZONOS2 checkpoints use config.yaml (not config.json or params.json), so the
+    standard resolvers miss them. Uses the public resolve_model_path to handle
+    both HF repo IDs and local paths, then checks for zonos2-specific config files.
+    """
+    try:
+        from pathlib import Path as _Path
+
+        from zonos2.utils.hf import resolve_model_path
+
+        resolved = _Path(resolve_model_path(model_path))
+        # params.json at the checkpoint root
+        if (resolved / "params.json").exists():
+            return "zonos2"
+        # config.yaml in dir or parent dirs (training-run layout)
+        for parent in [resolved, resolved.parent, resolved.parent.parent]:
+            if (parent / "config.yaml").exists():
+                return "zonos2"
+    except Exception:
+        pass
+    return None
+
+
 def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
     """Resolve architecture by reading raw ``config.json`` as plain JSON.
 
