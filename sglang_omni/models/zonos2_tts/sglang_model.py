@@ -704,6 +704,10 @@ class Zonos2SGLangModel(nn.Module):
                 "ZONOS2 skipped %d checkpoint keys: %s…", len(skipped), skipped[:5]
             )
         logger.info("ZONOS2 loaded %d parameter tensors", len(loaded))
+        # Disable gradients on all parameters; inference-only model.
+        # Without this, CUDA graph capture fails when fused MoE uses out= ops
+        # on tensors that still have requires_grad=True from nn.Parameter defaults.
+        self.requires_grad_(False)
         return loaded
 
     @staticmethod

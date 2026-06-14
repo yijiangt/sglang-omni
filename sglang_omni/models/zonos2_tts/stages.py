@@ -57,6 +57,9 @@ _zonos2_staging_dirs: list[str] = []
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_DEFAULT_QUALITY_BUCKETS = {"trailing_silence_s": 3}
+
+
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -69,11 +72,21 @@ def create_preprocessing_executor(
     resolved = resolve_model_path(model_path)
     zonos_cfg = cached_load_checkpoint_config(resolved)
 
-    quality_bucket_counts: tuple[int, ...] = ()
-    if getattr(zonos_cfg, "quality_buckets", None):
-        quality_bucket_counts = tuple(
-            len(vs) for vs in zonos_cfg.quality_buckets.values()
-        )
+    # Collect quality features in model-config order for bucket resolution
+    _raw_quality_buckets = getattr(zonos_cfg, "quality_buckets", None) or {}
+    _quality_features: list[str] = list(
+        getattr(zonos_cfg, "quality_features", None) or _raw_quality_buckets.keys()
+    )
+    quality_bucket_counts: tuple[int, ...] = tuple(
+        len(_raw_quality_buckets.get(f, ())) for f in _quality_features
+    ) if _quality_features else ()
+
+    _speaker_background_num_buckets: int = (
+        2 if getattr(zonos_cfg, "speaker_background_token_enabled", False) else 0
+    )
+    _accurate_mode_num_buckets: int = (
+        1 if getattr(zonos_cfg, "accurate_mode_token_enabled", False) else 0
+    )
 
     prompt_config = TTSPromptConfig(
         n_codebooks=int(getattr(zonos_cfg, "n_codebooks", 9)),
@@ -83,12 +96,8 @@ def create_preprocessing_executor(
             getattr(zonos_cfg, "speaking_rate_num_buckets", 0) or 0
         ),
         quality_bucket_counts=quality_bucket_counts,
-        speaker_background_num_buckets=(
-            2 if getattr(zonos_cfg, "speaker_background_token_enabled", False) else 0
-        ),
-        accurate_mode_num_buckets=(
-            1 if getattr(zonos_cfg, "accurate_mode_token_enabled", False) else 0
-        ),
+        speaker_background_num_buckets=_speaker_background_num_buckets,
+        accurate_mode_num_buckets=_accurate_mode_num_buckets,
         prepend_silence=True,
     )
     builder = TTSPromptBuilder(prompt_config)
@@ -115,6 +124,13 @@ def create_preprocessing_executor(
         accurate_mode = bool(params.get("accurate_mode", True))
         clean_speaker_background = bool(params.get("clean_speaker_background", False))
 
+        # Apply default quality conditioning when not explicitly set — matches
+        # TTSLLM.DEFAULT_QUALITY_BUCKETS and the ZONOS2 reference server default.
+        if quality_buckets is None and quality_bucket_counts and sum(quality_bucket_counts) > 0:
+            quality_buckets = [
+                _DEFAULT_QUALITY_BUCKETS.get(f) for f in _quality_features
+            ]
+
         # Try text normalisation (optional; falls back gracefully)
         try:
             from zonos2.tokenizer.textnorm import normalize_text
@@ -133,10 +149,43 @@ def create_preprocessing_executor(
 
         speaker_token_position = -1
         if _speaker_enabled and speaker_audio_path:
-            # Prepend speaker slot row; speaker embedding injected later
+            # Prepend speaker slot row; speaker embedding injected later.
+            # Also insert speaker-background and accurate-mode marker rows
+            # immediately after the speaker slot — matching the train-time layout
+            # used by the ZONOS2 reference scheduler (_with_speaker_frames).
             slot = builder.speaker_slot()  # (1, n_cols)
             slot_row = slot[0].tolist()
-            prompt_rows = [slot_row] + prompt_rows
+            pad = prompt_config.audio_pad_id
+            n_cb = prompt_config.n_codebooks
+
+            marker_rows: list[list[int]] = []
+            if _speaker_background_num_buckets > 0:
+                from zonos2.tts.prompt import (
+                    accurate_mode_token_id,
+                    speaker_background_token_id,
+                )
+
+                bg_tok = speaker_background_token_id(
+                    prompt_config.text_vocab,
+                    prompt_config.speaking_rate_num_buckets,
+                    quality_bucket_counts,
+                    clean_speaker_background,
+                    _speaker_background_num_buckets,
+                    _accurate_mode_num_buckets,
+                )
+                marker_rows.append([pad] * n_cb + [bg_tok])
+
+                if _accurate_mode_num_buckets > 0 and accurate_mode:
+                    am_tok = accurate_mode_token_id(
+                        prompt_config.text_vocab,
+                        prompt_config.speaking_rate_num_buckets,
+                        quality_bucket_counts,
+                        _speaker_background_num_buckets,
+                        _accurate_mode_num_buckets,
+                    )
+                    marker_rows.append([pad] * n_cb + [am_tok])
+
+            prompt_rows = [slot_row] + marker_rows + prompt_rows
             speaker_token_position = 0
 
         state = Zonos2TtsState(
@@ -256,8 +305,11 @@ def create_speaker_encoder_executor(
 
             if isinstance(spk_model, Qwen3SpeakerEmbedding):
                 emb = spk_model(waveform, sr)
-                # Pool along time dimension
-                emb = emb.mean(dim=1).squeeze(0)  # (dim,)
+                # Pool along time dimension if present (batch, time, dim) -> (dim,)
+                # or just squeeze batch dim if already (batch, dim)
+                if emb.dim() == 3:
+                    emb = emb.mean(dim=1)
+                emb = emb.squeeze(0)  # (dim,)
             else:
                 # SpeechBrain ECAPA-TDNN
                 emb = spk_model.encode_batch(waveform.to(device), normalize=False)

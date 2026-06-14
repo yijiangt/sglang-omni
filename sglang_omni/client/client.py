@@ -361,8 +361,12 @@ class Client:
     @staticmethod
     def _build_usage_info(data: dict[str, Any]) -> UsageInfo | None:
         usage = dict(data.get("usage") or {})
-        if "prompt_tokens" not in usage and data.get("prompt_tokens") is not None:
-            usage["prompt_tokens"] = data.get("prompt_tokens")
+        if "prompt_tokens" not in usage:
+            # Prefer the integer count field; fall back to prompt_tokens which
+            # may be a list of token rows (ZONOS2 stores the full token array there).
+            pt = data.get("prompt_tokens_count") or data.get("prompt_tokens")
+            if pt is not None:
+                usage["prompt_tokens"] = len(pt) if isinstance(pt, list) else pt
         if (
             "completion_tokens" not in usage
             and data.get("completion_tokens") is not None
@@ -372,7 +376,9 @@ class Client:
             prompt_tokens = usage.get("prompt_tokens")
             completion_tokens = usage.get("completion_tokens")
             if prompt_tokens is not None or completion_tokens is not None:
-                usage["total_tokens"] = (prompt_tokens or 0) + (completion_tokens or 0)
+                p = len(prompt_tokens) if isinstance(prompt_tokens, list) else (prompt_tokens or 0)
+                c = len(completion_tokens) if isinstance(completion_tokens, list) else (completion_tokens or 0)
+                usage["total_tokens"] = p + c
         if "engine_time_s" not in usage and data.get("engine_time_s") is not None:
             usage["engine_time_s"] = data.get("engine_time_s")
         return UsageInfo.from_dict(usage)
