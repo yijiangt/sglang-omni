@@ -1,158 +1,125 @@
 # SPDX-License-Identifier: Apache-2.0
-"""TEMP: single-process per-model CUDA graph batch validator.
+"""TEMP: all-stage CUDA graph batch validation smoke driver.
 
-For each requested model, boots its real SGLang generation stage IN THIS
-PROCESS (no router, no spawned workers, no separate filesystem namespace) by
-calling the model's own stage factory, captures the live ``model_runner`` via a
-monkeypatch on ``create_sglang_infrastructure``, runs the validator, and prints
-the report + raw upstream fields to stdout.
+Given a model_path, enumerates EVERY stage of the model's pipeline and prints
+one report per stage:
 
-This proves the validator is model-agnostic: each model boots exactly as in
-production, and the same introspection path is exercised for all of them.
+* SGLang-backed stage with CUDA graphs -> the three-way validation report
+  (serving config / captured batch sizes / model-side buffer).
+* SGLang-backed stage with CUDA graphs disabled -> a "no CUDA graph" note.
+* Custom-graph stage (MOSS-TTS-Local vocoder) -> a coverage report.
+* Any other stage (preprocessing, encoders, plain vocoders) -> a "no CUDA
+  graph" note.
 
-Usage (lab machine, in the venv that has sglang):
-    .venv/bin/python3 w1_smoke.py --models higgs qwen3_tts moss fishaudio voxtral
-    .venv/bin/python3 w1_smoke.py --models higgs --model-path <override>
+Two SGLang stages cannot be constructed in one process (upstream initializes a
+process-global tensor-parallel group, so the second trips
+"tensor model parallel group is already initialized"). So each stage is built
+in its OWN child subprocess: the driver enumerates stages and re-invokes itself
+once per stage with --stage NAME; the child constructs just that stage,
+validates it, prints, and exits. One stage's failure never stops the rest.
 
-REMOVE this file before opening the W1 PR.
+Usage (lab machine):
+    python w1_smoke.py --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
+    python w1_smoke.py --model-path <id> --stage tts_engine   # single stage (child mode)
+
+REMOVE this file before opening the PR.
 """
 
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import traceback
 
-# Each entry: factory module, factory function name, default HF model path.
-# All generation factories take model_path as the first positional arg.
-MODELS = {
-    "higgs": (
-        "sglang_omni.models.higgs_tts.stages",
-        "create_sglang_tts_engine_executor",
-        "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
-    ),
-    "qwen3_tts": (
-        "sglang_omni.models.qwen3_tts.stages",
-        "create_sglang_tts_engine_executor",
-        "Qwen/Qwen3-TTS-12Hz-0.6B-Base",  # override with --model-path as needed
-    ),
-    "moss": (
-        "sglang_omni.models.moss_tts.stages",
-        "create_sglang_tts_engine_executor",
-        "OpenMOSS-Team/MOSS-TTS-v1.5",
-    ),
-    "moss_local": (
-        "sglang_omni.models.moss_tts_local.stages",
-        "create_sglang_tts_engine_executor",
-        "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
-    ),
-    "fishaudio": (
-        "sglang_omni.models.fishaudio_s2_pro.stages",
-        "create_sglang_tts_engine_executor",
-        "fishaudio/fish-speech-1.5",  # override with --model-path as needed
-    ),
-    "voxtral": (
-        "sglang_omni.models.voxtral_tts.pipeline.stages",
-        "create_generation_executor",
-        "mistralai/Voxtral-Mini-3B-2507",  # override with --model-path as needed
-    ),
-}
+
+def _enumerate_stages(model_path: str):
+    """Return the model's [(stage_name, factory, is_sglang_or_customgraph)] list."""
+    from sglang_omni.config.manager import ConfigManager
+    from sglang_omni.utils.cuda_graph_batch_validator import _SGLANG_FACTORY_MARKERS
+
+    cfg = ConfigManager.from_model_path(model_path).config
+    stages = []
+    for stage in cfg.stages:
+        factory = stage.factory or ""
+        likely_graph = any(m in factory for m in _SGLANG_FACTORY_MARKERS) or (
+            "vocoder" in stage.name and "moss_tts_local" in factory
+        )
+        stages.append((stage.name, factory, likely_graph))
+    return cfg, stages
 
 
-def _run_one(name: str, model_path: str) -> None:
-    import importlib
+def _run_one_stage(model_path: str, stage_name: str) -> int:
+    """Child mode: construct ONE stage, validate it, print its report."""
+    from sglang_omni.config.manager import ConfigManager
+    from sglang_omni.config.runtime import resolve_stage_factory_args
+    from sglang_omni.utils.cuda_graph_batch_validator import validate_stage_scheduler
+    from sglang_omni.utils.imports import import_string
 
-    import sglang_omni.scheduling.bootstrap as bootstrap
-    from sglang_omni.utils.cuda_graph_batch_validator import (
-        read_model_buffer_capacity,
-        validate_stage,
-    )
+    cfg = ConfigManager.from_model_path(model_path).config
+    stage = next((s for s in cfg.stages if s.name == stage_name), None)
+    if stage is None:
+        print(f"[{stage_name}] ERROR: stage not found in pipeline", flush=True)
+        return 1
 
-    mod_name, fn_name, _default = MODELS[name]
-    factory = getattr(importlib.import_module(mod_name), fn_name)
+    print(f"\n######## constructing stage '{stage_name}' "
+          f"(factory={stage.factory}) ########", flush=True)
+    kwargs = resolve_stage_factory_args(stage, cfg, gpu_id=0)
+    factory = import_string(stage.factory)
+    scheduler = factory(**kwargs)
 
-    # Monkeypatch create_sglang_infrastructure to capture the model_worker,
-    # regardless of which model factory calls it or how it wraps the result.
-    captured = {}
-    orig = bootstrap.create_sglang_infrastructure
-
-    def _patched(*args, **kwargs):
-        result = orig(*args, **kwargs)
-        captured["model_worker"] = result[0]
-        return result
-
-    bootstrap.create_sglang_infrastructure = _patched
-    # Some factories import the symbol into their own module namespace.
-    factory_mod = importlib.import_module(mod_name)
-    had_local = hasattr(factory_mod, "create_sglang_infrastructure")
-    if had_local:
-        factory_mod.create_sglang_infrastructure = _patched
-
-    print(f"\n######## booting {name} ({model_path}) ########", flush=True)
-    try:
-        factory(model_path)
-    finally:
-        bootstrap.create_sglang_infrastructure = orig
-        if had_local:
-            factory_mod.create_sglang_infrastructure = orig
-
-    mw = captured.get("model_worker")
-    if mw is None:
-        print(f"[{name}] ERROR: model_worker was never captured "
-              f"(factory did not call create_sglang_infrastructure).", flush=True)
-        return
-
-    # buffer_capacity omitted -> the validator auto-reads the model-side buffer
-    # via its per-model probe registry (the path being validated here).
-    report = validate_stage(f"w1-smoke:{name}", mw.model_runner)
-    print(f"\n===== W1 VALIDATOR [{name}] =====")
+    report = validate_stage_scheduler(stage_name, scheduler)
+    print(f"\n===== W1 STAGE REPORT [{stage_name}] =====")
     print(report.format())
-    mr = mw.model_runner
-    gr = getattr(mr, "graph_runner", "<no graph_runner attr>")
-    print("raw model class:", type(getattr(mr, "model", None)).__name__)
-    print("raw graph_runner type:", type(gr).__name__)
-    print("raw capture_bs:", getattr(gr, "capture_bs", "<no capture_bs attr>"))
-    print("raw req_to_token_pool.size:",
-          getattr(getattr(mr, "req_to_token_pool", None), "size", "<none>"))
-    cap, src = read_model_buffer_capacity(getattr(mr, "model", None))
-    print(f"raw model-side buffer: {cap}  [{src}]")
-    print(f"===== END W1 VALIDATOR [{name}] =====\n", flush=True)
+    print(f"===== END [{stage_name}] =====\n", flush=True)
+    return 0
+
+
+def _run_all_stages(model_path: str) -> int:
+    """Driver mode: enumerate stages, run each in its own child subprocess."""
+    cfg, stages = _enumerate_stages(model_path)
+    print(f"\n######## model {model_path} ########")
+    print(f"pipeline: {type(cfg).__name__}  ({len(stages)} stages)")
+    for name, factory, likely_graph in stages:
+        tag = "graph?" if likely_graph else "no-graph"
+        print(f"  - {name:20s} [{tag}]  {factory}")
+    print("######## validating each stage in its own process ########\n",
+          flush=True)
+
+    results = {}
+    for name, _factory, _lg in stages:
+        # Each stage in a fresh process: avoids the SGLang TP-group singleton
+        # and isolates failures.
+        proc = subprocess.run(
+            [sys.executable, __file__, "--model-path", model_path, "--stage", name],
+        )
+        results[name] = "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
+
+    print("\n======== ALL-STAGE SUMMARY ========")
+    print(f"model: {model_path}  ({type(cfg).__name__})")
+    for name, status in results.items():
+        print(f"  {name:20s}: {status}")
+    return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--model-path", required=True)
     ap.add_argument(
-        "--models",
-        nargs="+",
-        default=["higgs"],
-        choices=list(MODELS),
-        help="Which models to boot and validate.",
-    )
-    ap.add_argument(
-        "--model-path",
+        "--stage",
         default=None,
-        help="Override the HF model path (only valid with a single --models).",
+        help="Child mode: construct and validate only this stage.",
     )
     args = ap.parse_args()
 
-    if args.model_path and len(args.models) != 1:
-        ap.error("--model-path requires exactly one --models entry")
-
-    results = {}
-    for name in args.models:
-        path = args.model_path or MODELS[name][2]
-        try:
-            _run_one(name, path)
-            results[name] = "ran"
-        except Exception as exc:  # keep going to the next model
-            results[name] = f"FAILED: {exc!r}"
-            print(f"\n!!!! {name} boot failed !!!!", flush=True)
-            traceback.print_exc()
-
-    print("\n======== SUMMARY ========")
-    for name, status in results.items():
-        print(f"  {name}: {status}")
-    return 0
+    try:
+        if args.stage is not None:
+            return _run_one_stage(args.model_path, args.stage)
+        return _run_all_stages(args.model_path)
+    except Exception as exc:
+        print(f"\n!!!! failed: {exc!r}", flush=True)
+        traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
