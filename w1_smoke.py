@@ -53,17 +53,14 @@ def _load_config(model_path: str | None, config_path: str | None):
 
 
 def _enumerate_stages(model_path: str | None, config_path: str | None):
-    """Return (cfg, [(stage_name, factory, is_sglang_or_customgraph)])."""
-    from sglang_omni.utils.cuda_graph_batch_validator import _SGLANG_FACTORY_MARKERS
+    """Return (cfg, [(stage_name, factory)]) for every stage in the pipeline.
 
+    No graph/no-graph guess here: whether a stage actually has a CUDA graph is
+    determined per stage at runtime by ``validate_stage_scheduler`` after the
+    stage is constructed.
+    """
     cfg = _load_config(model_path, config_path)
-    stages = []
-    for stage in cfg.stages:
-        factory = stage.factory or ""
-        likely_graph = any(m in factory for m in _SGLANG_FACTORY_MARKERS) or (
-            "vocoder" in stage.name and "moss_tts_local" in factory
-        )
-        stages.append((stage.name, factory, likely_graph))
+    stages = [(stage.name, stage.factory or "") for stage in cfg.stages]
     return cfg, stages
 
 
@@ -125,14 +122,13 @@ def _run_all_stages(model_path: str | None, config_path: str | None) -> int:
 
     print(f"\n######## model {source} ########")
     print(f"pipeline: {type(cfg).__name__}  ({len(stages)} stages)")
-    for name, factory, likely_graph in stages:
-        tag = "graph?" if likely_graph else "no-graph"
-        print(f"  - {name:20s} [{tag}]  {factory}")
+    for name, factory in stages:
+        print(f"  - {name:20s}  {factory}")
     print("######## validating each stage in its own process ########\n",
           flush=True)
 
     results = {}
-    for name, _factory, _lg in stages:
+    for name, _factory in stages:
         # Each stage in a fresh process: avoids the SGLang TP-group singleton
         # and isolates failures.
         proc = subprocess.run(
