@@ -75,6 +75,25 @@ class SGLModelRunner(ModelRunner):
             server_args=server_args,
         )
 
+    def init_device_graphs(self):
+        # Pre-capture fail-fast (W1): before CUDA graph capture runs, check
+        # that the captured batch sizes will not overrun the model-side buffer.
+        # On a mismatch this raises a clear CudaGraphBatchMismatch instead of the
+        # cryptic shape crash capture would otherwise produce. Best-effort: any
+        # probe failure falls through to normal capture.
+        try:
+            from sglang_omni.utils.cuda_graph_batch_validator import (
+                CudaGraphBatchMismatch,
+                precapture_guard,
+            )
+
+            precapture_guard(self)
+        except CudaGraphBatchMismatch:
+            raise
+        except Exception as exc:  # never block capture for a diagnostic failure
+            logger.warning("cuda_graph batch pre-capture guard skipped: %r", exc)
+        return super().init_device_graphs()
+
     def _register_omni_model(self):
         # Register sglang_omni model classes directly in SGLang's model registry.
         import importlib
