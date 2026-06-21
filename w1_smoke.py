@@ -19,8 +19,10 @@ once per stage with --stage NAME; the child constructs just that stage,
 validates it, prints, and exits. One stage's failure never stops the rest.
 
 Usage (lab machine):
-    python w1_smoke.py --model-path boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999
-    python w1_smoke.py --model-path <id> --stage tts_engine   # single stage (child mode)
+    python w1_smoke.py --model higgs           # short alias
+    python w1_smoke.py --model moss_local
+    python w1_smoke.py --model-path <full/hf-id>            # explicit path
+    python w1_smoke.py --model higgs --stage tts_engine    # single stage (child mode)
 
 REMOVE this file before opening the PR.
 """
@@ -113,20 +115,56 @@ def _run_all_stages(model_path: str) -> int:
     return 0
 
 
+# Short aliases -> full model path, so you can pass `--model higgs` instead of
+# the long HF id. Sourced from the TTS CI presets where they exist.
+_MODEL_ALIASES = {
+    "higgs": "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
+    "moss_local": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+    "moss": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "qwen3_tts": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    "fishaudio": "fishaudio/fish-speech-1.5",
+    "voxtral": "mistralai/Voxtral-Mini-3B-2507",
+}
+
+
+def _resolve_model_path(model: str | None, model_path: str | None) -> str:
+    """Resolve a short --model alias or a literal --model-path to a path."""
+    if model_path:
+        return model_path
+    if model:
+        # Known alias, else treat the value as a literal path/HF id.
+        return _MODEL_ALIASES.get(model, model)
+    raise SystemExit(
+        "provide --model <alias-or-path> (aliases: "
+        + ", ".join(_MODEL_ALIASES)
+        + ") or --model-path <path>"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model-path", required=True)
+    ap.add_argument(
+        "--model",
+        default=None,
+        help="Short alias (" + ", ".join(_MODEL_ALIASES) + ") or a literal path/HF id.",
+    )
+    ap.add_argument(
+        "--model-path",
+        default=None,
+        help="Full model path/HF id (overrides --model).",
+    )
     ap.add_argument(
         "--stage",
         default=None,
         help="Child mode: construct and validate only this stage.",
     )
     args = ap.parse_args()
+    model_path = _resolve_model_path(args.model, args.model_path)
 
     try:
         if args.stage is not None:
-            return _run_one_stage(args.model_path, args.stage)
-        return _run_all_stages(args.model_path)
+            return _run_one_stage(model_path, args.stage)
+        return _run_all_stages(model_path)
     except Exception as exc:
         print(f"\n!!!! failed: {exc!r}", flush=True)
         traceback.print_exc()
