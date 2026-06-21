@@ -19,10 +19,14 @@ once per stage with --stage NAME; the child constructs just that stage,
 validates it, prints, and exits. One stage's failure never stops the rest.
 
 Usage (lab machine):
-    python w1_smoke.py --model higgs           # short alias
+    python w1_smoke.py --model higgs           # alias: higgs | moss | moss_local
     python w1_smoke.py --model moss_local
-    python w1_smoke.py --model-path <full/hf-id>            # explicit path
+    python w1_smoke.py --model-path <full/hf-id>            # any other checkpoint
     python w1_smoke.py --model higgs --stage tts_engine    # single stage (child mode)
+
+Only higgs / moss / moss_local have public, dependency-complete aliases.
+Other models (qwen3_tts needs the qwen-tts package; fishaudio / voxtral need
+fine-tuned omni checkpoints) must be passed via --model-path.
 
 REMOVE this file before opening the PR.
 """
@@ -90,7 +94,19 @@ def _run_one_stage(model_path: str, stage_name: str) -> int:
 
 def _run_all_stages(model_path: str) -> int:
     """Driver mode: enumerate stages, run each in its own child subprocess."""
-    cfg, stages = _enumerate_stages(model_path)
+    try:
+        cfg, stages = _enumerate_stages(model_path)
+    except ValueError as exc:
+        # Arch couldn't resolve: usually a base HF id whose config.json does not
+        # declare an omni pipeline arch, or a checkpoint not present locally.
+        print(
+            f"\nCould not load a pipeline config for {model_path!r}: {exc}\n"
+            f"This model needs a checkpoint whose config.json declares a known "
+            f"omni architecture. Pass the real checkpoint with --model-path, or "
+            f"use a known alias: {', '.join(_MODEL_ALIASES)}.",
+            flush=True,
+        )
+        return 1
     print(f"\n######## model {model_path} ########")
     print(f"pipeline: {type(cfg).__name__}  ({len(stages)} stages)")
     for name, factory, likely_graph in stages:
@@ -116,14 +132,16 @@ def _run_all_stages(model_path: str) -> int:
 
 
 # Short aliases -> full model path, so you can pass `--model higgs` instead of
-# the long HF id. Sourced from the TTS CI presets where they exist.
+# the long HF id. Only models with public, resolvable checkpoints + deps are
+# given aliases here (verified to boot). Others (qwen3_tts needs the qwen-tts
+# package; fishaudio/voxtral need fine-tuned checkpoints whose config.json
+# declares the omni arch FishQwen3OmniForCausalLM / VoxtralTTSForConditional-
+# Generation -- the public base ids do NOT resolve) must be passed explicitly
+# via --model-path <your-checkpoint>.
 _MODEL_ALIASES = {
     "higgs": "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
     "moss_local": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
     "moss": "OpenMOSS-Team/MOSS-TTS-v1.5",
-    "qwen3_tts": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-    "fishaudio": "fishaudio/fish-speech-1.5",
-    "voxtral": "mistralai/Voxtral-Mini-3B-2507",
 }
 
 
