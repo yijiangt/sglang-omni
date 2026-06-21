@@ -39,12 +39,24 @@ import sys
 import traceback
 
 
-def _enumerate_stages(model_path: str):
-    """Return the model's [(stage_name, factory, is_sglang_or_customgraph)] list."""
+def _load_config(model_path: str | None, config_path: str | None):
+    """Load a PipelineConfig from a yaml config file or a model path.
+
+    A config file (``config_cls`` + ``model_path``) is preferred when available
+    because it resolves by class name and avoids HF arch resolution.
+    """
     from sglang_omni.config.manager import ConfigManager
+
+    if config_path:
+        return ConfigManager.from_file(config_path).config
+    return ConfigManager.from_model_path(model_path).config
+
+
+def _enumerate_stages(model_path: str | None, config_path: str | None):
+    """Return (cfg, [(stage_name, factory, is_sglang_or_customgraph)])."""
     from sglang_omni.utils.cuda_graph_batch_validator import _SGLANG_FACTORY_MARKERS
 
-    cfg = ConfigManager.from_model_path(model_path).config
+    cfg = _load_config(model_path, config_path)
     stages = []
     for stage in cfg.stages:
         factory = stage.factory or ""
@@ -55,14 +67,14 @@ def _enumerate_stages(model_path: str):
     return cfg, stages
 
 
-def _run_one_stage(model_path: str, stage_name: str) -> int:
+def _run_one_stage(model_path: str | None, config_path: str | None,
+                   stage_name: str) -> int:
     """Child mode: construct ONE stage, validate it, print its report."""
-    from sglang_omni.config.manager import ConfigManager
     from sglang_omni.config.runtime import resolve_stage_factory_args
     from sglang_omni.utils.cuda_graph_batch_validator import validate_stage_scheduler
     from sglang_omni.utils.imports import import_string
 
-    cfg = ConfigManager.from_model_path(model_path).config
+    cfg = _load_config(model_path, config_path)
     stage = next((s for s in cfg.stages if s.name == stage_name), None)
     if stage is None:
         print(f"[{stage_name}] ERROR: stage not found in pipeline", flush=True)
@@ -92,22 +104,26 @@ def _run_one_stage(model_path: str, stage_name: str) -> int:
     return 0
 
 
-def _run_all_stages(model_path: str) -> int:
+def _run_all_stages(model_path: str | None, config_path: str | None) -> int:
     """Driver mode: enumerate stages, run each in its own child subprocess."""
+    source = config_path or model_path
     try:
-        cfg, stages = _enumerate_stages(model_path)
-    except ValueError as exc:
-        # Arch couldn't resolve: usually a base HF id whose config.json does not
-        # declare an omni pipeline arch, or a checkpoint not present locally.
+        cfg, stages = _enumerate_stages(model_path, config_path)
+    except (ValueError, FileNotFoundError) as exc:
         print(
-            f"\nCould not load a pipeline config for {model_path!r}: {exc}\n"
-            f"This model needs a checkpoint whose config.json declares a known "
-            f"omni architecture. Pass the real checkpoint with --model-path, or "
-            f"use a known alias: {', '.join(_MODEL_ALIASES)}.",
+            f"\nCould not load a pipeline config for {source!r}: {exc}\n"
+            f"Pass a checkpoint whose config.json declares a known omni "
+            f"architecture (--model-path), or point at a config file "
+            f"(--config examples/configs/<model>.yaml).",
             flush=True,
         )
         return 1
-    print(f"\n######## model {model_path} ########")
+
+    # Child-mode args to reproduce this exact config in each subprocess.
+    src_args = (["--config", config_path] if config_path
+                else ["--model-path", model_path])
+
+    print(f"\n######## model {source} ########")
     print(f"pipeline: {type(cfg).__name__}  ({len(stages)} stages)")
     for name, factory, likely_graph in stages:
         tag = "graph?" if likely_graph else "no-graph"
@@ -120,42 +136,58 @@ def _run_all_stages(model_path: str) -> int:
         # Each stage in a fresh process: avoids the SGLang TP-group singleton
         # and isolates failures.
         proc = subprocess.run(
-            [sys.executable, __file__, "--model-path", model_path, "--stage", name],
+            [sys.executable, __file__, *src_args, "--stage", name],
         )
         results[name] = "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
 
     print("\n======== ALL-STAGE SUMMARY ========")
-    print(f"model: {model_path}  ({type(cfg).__name__})")
+    print(f"model: {source}  ({type(cfg).__name__})")
     for name, status in results.items():
         print(f"  {name:20s}: {status}")
     return 0
 
 
-# Short aliases -> full model path, so you can pass `--model higgs` instead of
-# the long HF id. Only models with public, resolvable checkpoints + deps are
-# given aliases here (verified to boot). Others (qwen3_tts needs the qwen-tts
-# package; fishaudio/voxtral need fine-tuned checkpoints whose config.json
-# declares the omni arch FishQwen3OmniForCausalLM / VoxtralTTSForConditional-
-# Generation -- the public base ids do NOT resolve) must be passed explicitly
-# via --model-path <your-checkpoint>.
+# Short aliases -> full model path (the real checkpoints the repo's
+# examples/configs use). qwen3_tts additionally needs the `qwen-tts` package
+# installed; fishaudio/voxtral need their TTS checkpoints present. For models
+# whose arch does not resolve from the HF id alone, prefer --config with the
+# matching examples/configs/*.yaml (loads via config_cls, no arch resolution).
 _MODEL_ALIASES = {
     "higgs": "boson-sglang/higgs-audio-v3-TTS-4B-grpo05200410999",
     "moss_local": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
     "moss": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "qwen3_tts": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    "fishaudio": "fishaudio/s2-pro",
+    "voxtral": "mistralai/Voxtral-4B-TTS-2603",
+}
+
+# Aliases -> the repo example config (loaded via ConfigManager.from_file, which
+# resolves by config_cls and so works even when the bare HF id would not).
+_CONFIG_ALIASES = {
+    "fishaudio": "examples/configs/s2pro_tts.yaml",
+    "voxtral": "examples/configs/voxtral_tts.yaml",
+    "qwen3_tts": "examples/configs/qwen3_tts_0_6b.yaml",
 }
 
 
-def _resolve_model_path(model: str | None, model_path: str | None) -> str:
-    """Resolve a short --model alias or a literal --model-path to a path."""
+def _resolve_source(model, model_path, config):
+    """Resolve CLI inputs to (model_path, config_path); config wins if given.
+
+    For an alias that has a known example config (fishaudio/voxtral/qwen3_tts),
+    prefer the config file -- it loads by config_cls and avoids HF arch
+    resolution that the bare id can fail.
+    """
+    if config:
+        return None, config
     if model_path:
-        return model_path
+        return model_path, None
     if model:
-        # Known alias, else treat the value as a literal path/HF id.
-        return _MODEL_ALIASES.get(model, model)
+        if model in _CONFIG_ALIASES:
+            return None, _CONFIG_ALIASES[model]
+        return _MODEL_ALIASES.get(model, model), None
     raise SystemExit(
-        "provide --model <alias-or-path> (aliases: "
-        + ", ".join(_MODEL_ALIASES)
-        + ") or --model-path <path>"
+        "provide --model <alias> (" + ", ".join(_MODEL_ALIASES) + "), "
+        "--model-path <path>, or --config <yaml>"
     )
 
 
@@ -169,7 +201,12 @@ def main() -> int:
     ap.add_argument(
         "--model-path",
         default=None,
-        help="Full model path/HF id (overrides --model).",
+        help="Full model path/HF id.",
+    )
+    ap.add_argument(
+        "--config",
+        default=None,
+        help="Path to a pipeline config yaml (e.g. examples/configs/voxtral_tts.yaml).",
     )
     ap.add_argument(
         "--stage",
@@ -177,12 +214,12 @@ def main() -> int:
         help="Child mode: construct and validate only this stage.",
     )
     args = ap.parse_args()
-    model_path = _resolve_model_path(args.model, args.model_path)
+    model_path, config_path = _resolve_source(args.model, args.model_path, args.config)
 
     try:
         if args.stage is not None:
-            return _run_one_stage(model_path, args.stage)
-        return _run_all_stages(model_path)
+            return _run_one_stage(model_path, config_path, args.stage)
+        return _run_all_stages(model_path, config_path)
     except Exception as exc:
         print(f"\n!!!! failed: {exc!r}", flush=True)
         traceback.print_exc()
