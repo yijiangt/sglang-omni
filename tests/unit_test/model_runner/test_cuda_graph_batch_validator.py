@@ -97,8 +97,9 @@ def test_buffer_below_admission_limit_flagged():
     assert any("cannot be served" in f for f in report.findings)
 
 
-def test_clamped_cap_is_noted_not_failed():
-    # configured cap 64 but capture clamped to 16 by request slots -> note only
+def test_clamped_cap_is_not_a_failure():
+    # configured cap 64 but capture clamped to 16 by request slots -> still OK,
+    # and no noise finding about the clamp (it is normal, not a problem).
     report = evaluate_cuda_graph_batch_sizing(
         stage="talker_ar",
         max_running_requests=16,
@@ -108,7 +109,7 @@ def test_clamped_cap_is_noted_not_failed():
         buffer_capacity=17,
     )
     assert report.ok
-    assert any("clamped" in f for f in report.findings)
+    assert not any("clamped" in f for f in report.findings)
 
 
 def test_missing_buffer_validates_partial():

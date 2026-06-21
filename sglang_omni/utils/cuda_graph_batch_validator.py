@@ -220,21 +220,6 @@ def evaluate_cuda_graph_batch_sizing(
             f"cannot be served."
         )
 
-    # Captured sizes are clamped upstream to the request-slot count; a max
-    # captured size below the configured cap means the cap never takes effect.
-    # Informational -- not a failure.
-    if (
-        cuda_graph_max_bs is not None
-        and max_captured is not None
-        and max_captured < cuda_graph_max_bs
-    ):
-        findings.append(
-            f"max captured bs ({max_captured}) is below cuda_graph_max_bs "
-            f"({cuda_graph_max_bs}); the configured cap is clamped, likely by "
-            f"request slots ({request_slots}) / max_running_requests "
-            f"({max_running_requests})."
-        )
-
     if ok and not findings:
         findings.append(
             "captured sizes and model-side buffer track the serving config."
