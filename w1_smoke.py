@@ -62,6 +62,17 @@ def _run_one_stage(model_path: str, stage_name: str) -> int:
         print(f"[{stage_name}] ERROR: stage not found in pipeline", flush=True)
         return 1
 
+    # The real runner sets the CUDA device before constructing a GPU stage
+    # (stage_workers.py: torch.cuda.set_device). Replicate so GPU stages build
+    # on gpu 0 in this single-GPU diagnostic.
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.set_device(0)
+    except Exception:
+        pass
+
     print(f"\n######## constructing stage '{stage_name}' "
           f"(factory={stage.factory}) ########", flush=True)
     kwargs = resolve_stage_factory_args(stage, cfg, gpu_id=0)
