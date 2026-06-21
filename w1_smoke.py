@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""TEMP (#836 W1): single-process per-model CUDA graph batch validator.
+"""TEMP: single-process per-model CUDA graph batch validator.
 
 For each requested model, boots its real SGLang generation stage IN THIS
 PROCESS (no router, no spawned workers, no separate filesystem namespace) by
@@ -63,7 +63,10 @@ def _run_one(name: str, model_path: str) -> None:
     import importlib
 
     import sglang_omni.scheduling.bootstrap as bootstrap
-    from sglang_omni.utils.cuda_graph_batch_validator import inspect_model_runner
+    from sglang_omni.utils.cuda_graph_batch_validator import (
+        read_model_buffer_capacity,
+        validate_stage,
+    )
 
     mod_name, fn_name, _default = MODELS[name]
     factory = getattr(importlib.import_module(mod_name), fn_name)
@@ -99,16 +102,20 @@ def _run_one(name: str, model_path: str) -> None:
               f"(factory did not call create_sglang_infrastructure).", flush=True)
         return
 
-    report = inspect_model_runner(mw.model_runner, stage=f"w1-smoke:{name}",
-                                  buffer_capacity=None)
+    # buffer_capacity omitted -> the validator auto-reads the model-side buffer
+    # via its per-model probe registry (the path being validated here).
+    report = validate_stage(f"w1-smoke:{name}", mw.model_runner)
     print(f"\n===== W1 VALIDATOR [{name}] =====")
     print(report.format())
     mr = mw.model_runner
     gr = getattr(mr, "graph_runner", "<no graph_runner attr>")
+    print("raw model class:", type(getattr(mr, "model", None)).__name__)
     print("raw graph_runner type:", type(gr).__name__)
     print("raw capture_bs:", getattr(gr, "capture_bs", "<no capture_bs attr>"))
     print("raw req_to_token_pool.size:",
           getattr(getattr(mr, "req_to_token_pool", None), "size", "<none>"))
+    cap, src = read_model_buffer_capacity(getattr(mr, "model", None))
+    print(f"raw model-side buffer: {cap}  [{src}]")
     print(f"===== END W1 VALIDATOR [{name}] =====\n", flush=True)
 
 
