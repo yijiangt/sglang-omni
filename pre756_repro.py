@@ -53,13 +53,22 @@ def main() -> int:
     )
     from sglang_omni.utils.cuda_graph_batch_validator import CudaGraphBatchMismatch
 
+    # Override BOTH cuda_graph_max_bs AND max_running_requests: capture sizes
+    # are clamped to req_to_token_pool.size (derived from max_running_requests),
+    # so leaving mrr at the pre-756 default 16 would cap capture at 16 and never
+    # overrun the 65-row buffer. Pushing mrr to the same large value lets capture
+    # actually reach cuda_graph_max_bs. The buffer stays hard-coded at 64 (pool
+    # 65) regardless -- that is the #756 bug.
     print(f"booting Higgs tts_engine with cuda_graph_max_bs="
-          f"{args.cuda_graph_max_bs} (buffer is hard-coded 64 -> pool 65) ...",
-          flush=True)
+          f"{args.cuda_graph_max_bs}, max_running_requests={args.cuda_graph_max_bs} "
+          f"(buffer is hard-coded 64 -> pool 65) ...", flush=True)
     try:
         create_sglang_tts_engine_executor(
             args.model_path,
-            server_args_overrides={"cuda_graph_max_bs": args.cuda_graph_max_bs},
+            server_args_overrides={
+                "cuda_graph_max_bs": args.cuda_graph_max_bs,
+                "max_running_requests": args.cuda_graph_max_bs,
+            },
         )
     except CudaGraphBatchMismatch as exc:
         print("\n========================================")
