@@ -456,6 +456,21 @@ def _construct_stage(
 
     scheduler = _construct_scheduler(spec, gpu_id, log)
 
+    # TEMP (W1 sweep repro): log the CUDA graph batch validation for this stage
+    # at startup, so a tuning sweep can correlate each run's throughput with what
+    # was actually captured. Best-effort; never blocks stage startup.
+    try:
+        from sglang_omni.utils.cuda_graph_batch_validator import (
+            validate_stage_scheduler,
+        )
+
+        log.warning(
+            "CUDA-GRAPH-VALIDATION\n%s",
+            validate_stage_scheduler(spec.stage_name, scheduler).format(),
+        )
+    except Exception as _cgv_exc:
+        log.warning("CUDA-GRAPH-VALIDATION skipped: %r", _cgv_exc)
+
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:
             return []
