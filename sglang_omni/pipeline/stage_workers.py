@@ -456,18 +456,32 @@ def _construct_stage(
 
     scheduler = _construct_scheduler(spec, gpu_id, log)
 
-    # TEMP (W1 sweep repro): log the CUDA graph batch validation for this stage
+    # TEMP (W1 sweep repro): emit the CUDA graph batch validation for this stage
     # at startup, so a tuning sweep can correlate each run's throughput with what
-    # was actually captured. Best-effort; never blocks stage startup.
+    # was actually captured. The stage runs in a spawned grandchild process whose
+    # stdout may not reach the sweep terminal, so write to BOTH the logger and a
+    # fixed file (/tmp/cuda_graph_validation.log, appended). Best-effort; never
+    # blocks stage startup.
     try:
         from sglang_omni.utils.cuda_graph_batch_validator import (
             validate_stage_scheduler,
         )
 
-        log.warning(
-            "CUDA-GRAPH-VALIDATION\n%s",
-            validate_stage_scheduler(spec.stage_name, scheduler).format(),
+        _cgv_report = validate_stage_scheduler(spec.stage_name, scheduler).format()
+        _cgv_block = (
+            f"\n===== CUDA-GRAPH-VALIDATION [{spec.stage_name}] =====\n"
+            f"{_cgv_report}\n"
+            f"===== END CUDA-GRAPH-VALIDATION =====\n"
         )
+        log.warning(_cgv_block)
+        import sys as _cgv_sys
+
+        print(_cgv_block, file=_cgv_sys.stderr, flush=True)
+        try:
+            with open("/tmp/cuda_graph_validation.log", "a", encoding="utf-8") as _f:
+                _f.write(_cgv_block)
+        except Exception:
+            pass
     except Exception as _cgv_exc:
         log.warning("CUDA-GRAPH-VALIDATION skipped: %r", _cgv_exc)
 
