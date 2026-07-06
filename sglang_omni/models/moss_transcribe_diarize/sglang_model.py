@@ -24,6 +24,9 @@ from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.models.whisper import WhisperEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
+    WhisperEncoderCudaGraphRunner,
+)
 from sglang_omni.models.moss_transcribe_diarize.hf_config import (
     MossTranscribeDiarizeConfig,
 )
@@ -117,10 +120,6 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         buckets = [int(b) for b in (chunk_buckets or []) if int(b) >= 1]
         if not buckets:
             return
-        from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
-            WhisperEncoderCudaGraphRunner,
-        )
-
         runner = WhisperEncoderCudaGraphRunner(
             self.whisper_encoder,
             num_mel_bins=int(self.config.audio_config.num_mel_bins),

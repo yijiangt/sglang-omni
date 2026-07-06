@@ -92,18 +92,18 @@ class WhisperEncoderCudaGraphRunner:
                 if not enough:
                     logger.warning(
                         "MOSS-TD encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
-                        "headroom; skipping chunks=%d+ (eager)",
+                        "headroom; skipping chunks=%d",
                         free / 1024**3,
                         self._min_free_bytes / 1024**3,
                         c,
                     )
-                    break
+                    continue
                 try:
                     self._capture_bucket(c, encoder_len, forward_batch)
                 except Exception as exc:
                     logger.warning(
                         "MOSS-TD encoder CUDA graph capture failed for chunks=%d: "
-                        "%s; will use eager for this size",
+                        "%s; will use a larger captured graph or eager",
                         c,
                         exc,
                     )
