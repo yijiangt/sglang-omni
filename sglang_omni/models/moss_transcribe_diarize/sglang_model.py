@@ -113,8 +113,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         """Capture per-chunk-count CUDA graphs for the Whisper encoder.
 
         Called from the stage factory after the model is on-device and CUDA
-        graphs are enabled. ``input_feature_len`` is the fixed length of the
-        encoder's ``input_features`` time axis for one 30s window
+        graphs are enabled. input_feature_len is the fixed length of the
+        encoder's input_features time axis for one 30s window
         (WhisperFeatureExtractor.nb_max_frames).
         """
         buckets = [int(b) for b in (chunk_buckets or []) if int(b) >= 1]

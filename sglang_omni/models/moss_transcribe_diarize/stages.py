@@ -33,8 +33,9 @@ from sglang_omni.scheduling.sglang_backend import (
 # Note (yijiang): Encoder CUDA-graph chunk-count buckets (1 chunk = one 30s audio
 # window). Chunk count depends on audio length (no config field to derive it
 # from). Larger counts will fall back to eager. Overridable via the
-# ``encoder_graph_chunk_buckets``.
+# encoder_graph_chunk_buckets.
 _DEFAULT_ENCODER_GRAPH_CHUNK_BUCKETS = [1, 2, 4, 8, 16, 32]
+
 
 @contextmanager
 def _missing_additional_chat_templates_compat() -> Iterator[None]:

@@ -2,7 +2,7 @@
 """Per-chunk-count CUDA graph for the MOSS-TD Whisper encoder.
 
 The Whisper encoder is a fixed-shape, stateless pure function: input mel
-``[num_chunks, num_mel_bins, input_feature_len]`` -> ``[num_chunks, encoder_len, d_model]``.
+[num_chunks, num_mel_bins, input_feature_len] -> [num_chunks, encoder_len, d_model].
 
 Only the first dim (chunk count) varies, so we bucket over chunk count and pad
 up to the nearest captured bucket on replay.
@@ -111,7 +111,7 @@ class WhisperEncoderCudaGraphRunner:
 
     @torch.no_grad()
     def run(self, input_features, encoder_position_ids, forward_batch):
-        """Replay the graph for ``[n, num_mel_bins, input_feature_len]`` features,
+        """Replay the graph for [n, num_mel_bins, input_feature_len] features,
         padding up to the nearest captured bucket. Falls back to eager if no
         bucket fits or the input_feature_len differs from capture."""
         n = input_features.shape[0]
