@@ -1,13 +1,19 @@
 # MOSS-TTS
 
-[MOSS-TTS-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5) is a discrete
-multi-codebook text-to-speech model from the OpenMOSS team. It pairs a Qwen3 language-model
-backbone with 32 residual-vector-quantization (RVQ) audio codebooks scheduled in a **delay
-pattern** (one text channel plus 32 audio channels, advanced one codebook per frame). It clones
-a voice from a short reference clip, can synthesize without a reference, supports inline
-duration control, and the vocoder reconstructs 24 kHz speech. In SGLang-Omni it runs as a
-`preprocessing → tts_engine → vocoder` pipeline and is served through the OpenAI-compatible
-`/v1/audio/speech` endpoint.
+[MOSS-TTS-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5) is a delay-pattern text-to-speech model from MOSI.AI and the OpenMOSS team. It reconstructs **24 kHz** speech and supports zero-shot voice cloning from reference audio, reference-less synthesis, long-form speech generation, streaming, token-level duration control, Pinyin/IPA pronunciation control, multilingual synthesis, and code-switching. The model supports **31 languages**, accepts language tags to guide multilingual generation, and supports inline pause markers such as `[pause 3.2s]` for explicit prosody control.
+
+![MOSS-TTS delay-pattern architecture](../_static/image/moss-tts-arch-delay.png)
+
+Architecturally, MOSS-TTS-v1.5 is the `delay-pattern` counterpart to [MOSS-TTS-Local-Transformer-v1.5](moss_tts_local.md). The Qwen3-8B backbone predicts one text stream plus 32 residual-vector-quantization (RVQ) audio codebooks with delay-pattern scheduling; the generated codes are de-delayed and reconstructed into waveform by the vocoder. In SGLang-Omni it runs as a `preprocessing → tts_engine → vocoder` pipeline served through the OpenAI-compatible `/v1/audio/speech` endpoint.
+
+| Component | Spec |
+|---|---|
+| Architecture | `MossTTSDelayModel` (`moss_tts_delay`) |
+| Backbone | Qwen3-8B autoregressive decoder (36 L, hidden=4096, GQA 32/8) |
+| Audio tokens | 32-codebook RVQ depth with delay-pattern scheduling |
+| Output audio | 24 kHz |
+| Languages | 31 languages with optional language tags |
+| Controls | Voice reference, target duration tokens, Pinyin/IPA, pause markers, style instructions |
 
 ## Prerequisites
 
@@ -32,6 +38,44 @@ sgl-omni serve \
   --port 8000
 ```
 
+The default model-specific layout keeps the FP32 reference encoder on CPU and
+loads the GPU vocoder in BF16. This removes one codec copy from GPU and halves
+the parameter memory of the remaining codec.
+
+For the bounded 32 GB qualification layout, use:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+  --config examples/configs/moss_tts_32gb.yaml \
+  --port 8000
+```
+
+This configuration limits request concurrency and CUDA Graph capture to batch
+size 1. It completed startup and reference-less non-streaming synthesis on one
+RTX 5090 with 32,607 MiB, peaking at 26,939 MiB. Treat this as a measured
+qualification point rather than a general claim for every 32 GB card.
+
+For the directly measured 24 GB layout, use:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+  --config examples/configs/moss_tts_24gb.yaml \
+  --port 8000
+```
+
+This profile completed startup, CUDA Graph capture, reference and
+reference-less synthesis, streaming, cancellation, and recovery on one RTX
+4090 with 24,564 MiB. Peak sampled VRAM was 23,251 MiB, leaving a minimum of
+960 MiB free. SGLang profiled an effective 6,708-token KV capacity below the
+requested `max_total_tokens: 8192`. Treat this as a concurrency-1,
+CUDA-Graph-cap-1 qualification point, not a broader 24 GB capacity claim.
+
+Both policies can be changed explicitly through the preprocessing/vocoder
+stages' `factory.*` entries when profiling another layout. Explicit `device`
+values take precedence over the GPU selected by stage placement.
+
 ## Synthesizing Speech
 
 ### Basic Speech
@@ -41,7 +85,11 @@ MOSS-TTS can synthesize speech without a reference clip:
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"input": "SGLang-Omni is a great project!"}' \
+  -d '{
+    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "voice": "default",
+    "input": "SGLang-Omni is a great project!"
+  }' \
   --output output.wav
 ```
 
@@ -55,6 +103,8 @@ the transcript materially improves cloning quality.
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "voice": "default",
     "input": "SGLang-Omni is a great project!",
     "references": [{
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
@@ -75,6 +125,8 @@ import requests
 resp = requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
+        "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+        "voice": "default",
         "input": "Get the trust fund to the bank early.",
         "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
         "ref_text": "We asked over twenty different people, and they all said it was his.",
@@ -96,18 +148,22 @@ URL, or a base64 **data URI** (`data:audio/wav;base64,<...>`, decoded with `soun
 
 ### Streaming
 
-Set `"stream": true` to receive Server-Sent Events (SSE). Audio events carry base64-encoded WAV
-bytes in `audio.data`; the final metadata event has `audio: null`, followed by `data: [DONE]`.
+Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
+chunks in real time.
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
     "ref_text": "We asked over twenty different people, and they all said it was his.",
-    "stream": true
-  }'
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output.pcm
 ```
 
 ### Duration Control
@@ -118,7 +174,12 @@ or with a `token_count` (alias `duration_tokens` / `tokens`) parameter. The coun
 positive integer.
 
 ```json
-{"input": "${token:150}A sentence with an explicit duration target.", "ref_audio": "..."}
+{
+  "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+  "voice": "default",
+  "input": "${token:150}A sentence with an explicit duration target.",
+  "ref_audio": "..."
+}
 ```
 
 If omitted, the model picks a duration on its own; the SeedTTS benchmark estimates one per
@@ -133,10 +194,11 @@ to let the model infer from the text):
 
 ```json
 {
+  "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+  "voice": "default",
   "input": "今天天气不错 [pause 0.5s] 就该出去晒晒太阳。",
   "ref_audio": "...", "ref_text": "...",
   "language": "Chinese",
-  "instructions": "Speak slowly and warmly."
 }
 ```
 
@@ -144,19 +206,21 @@ to let the model infer from the text):
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `input` | (required) | Text to synthesize; may carry a `${token:N}` duration prefix and inline markup |
-| `references` | `null` | Reference clip for cloning; each item has `audio_path` and `text` |
+| `model` | served model | Served model identifier |
+| `input` | (required) | Text to synthesize. It may carry a `${token:N}` duration prefix and inline markup |
+| `voice` | `default` | Voice identifier |
+| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
-| `stream` | `false` | Enable SSE streaming |
-| `language` | `null` | Optional target-language hint; omit to let the model infer |
+| `stream` | `false` | Stream raw PCM audio chunks |
+| `language` | `null` | Optional target-language hint. Omit to let the model infer |
 | `instructions` / `instruct` | `null` | Optional free-text style directive |
-| `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames; must be `> 0` |
-| `max_new_tokens` | `4096` | Maximum generated frames; an explicit value must be `> 0` |
-| `temperature` | `1.5` text / `1.7` audio | Sampling temperature; a single `temperature` overrides both channels |
-| `top_p` | `1.0` text / `0.8` audio | Top-p sampling; a single `top_p` overrides both channels |
-| `top_k` | `50` text / `25` audio | Top-k sampling; a single `top_k` overrides both channels |
+| `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames. It must be `> 0` |
+| `max_new_tokens` | `4096` | Maximum generated frames. An explicit value must be `> 0` |
+| `temperature` | `1.5` text / `1.7` audio | Sampling temperature. A single `temperature` overrides both channels |
+| `top_p` | `1.0` text / `0.8` audio | Top-p sampling. A single `top_p` overrides both channels |
+| `top_k` | `50` text / `25` audio | Top-k sampling. A single `top_k` overrides both channels |
 | `repetition_penalty` | `1.0` | Audio repetition penalty |
-| `seed` | `null` | Non-negative integer; see [Seed Reproducibility](#seed-reproducibility) |
+| `seed` | `null` | Non-negative integer. See [Seed Reproducibility](#seed-reproducibility) |
 
 The per-channel fields (`text_temperature`, `audio_temperature`, `text_top_p`, `audio_top_p`,
 `text_top_k`, `audio_top_k`, `audio_repetition_penalty`) are also accepted and take precedence
